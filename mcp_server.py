@@ -6,7 +6,7 @@ from nextcloud_client import NextCloudClient
 # Load environment variables
 load_dotenv()
 
-mcp = FastMCP("Simple NextCloud MCP Server")
+mcp = FastMCP("Simple NextCloud MCP Server", stateless_http=True, json_response=True)
 
 # Initialize NextCloud client with the shared folder URL
 NEXTCLOUD_HOSTNAME = os.getenv("HOSTNAME")
@@ -32,7 +32,7 @@ async def read_file(filename: str) -> str:
 
 def main():
     # Initialize and run the server
-    mcp.run(transport="stdio")
+    mcp.run(transport="streamable-http")
 
 
 if __name__ == "__main__":
