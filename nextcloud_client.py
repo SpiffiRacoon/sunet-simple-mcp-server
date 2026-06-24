@@ -1,40 +1,44 @@
 import os
-from webdav3.client import Client
+from aiodav import Client
 from typing import List, Dict
 import tempfile
 import sys
 import pymupdf4llm
 from presidio_filter import PII_filter
-
-filter = PII_filter()
+import asyncio
 
 class NextCloudClient:
-    def __init__(self, share_url: str, share_host: str, share_token: str):
+    def __init__(self, share_host: str, share_token: str, pii_filter: PII_filter):
         """Initialize NextCloud client with the share URL."""
-        self.share_url = share_url
         self.webdav_options = {
-            'webdav_hostname': share_host,
-            'webdav_login': share_token,  # Token from the share URL
-            'webdav_password': '',
-            'webdav_root': 'public.php/dav/files/'+share_token,
+            'hostname': share_host,
+            'token': share_token,  # Token from the share URL
+            'root': 'public.php/dav/files/'+share_token,
         }
-        self.client = Client(self.webdav_options)
+        self.filter = pii_filter
+        self._client = None
         
-    def list_files(self) -> List[str]:
+    def _get_client(self) -> Client:
+        if self._client is None:
+            self._client = Client(**self.webdav_options)
+        return self._client
+        
+    async def list_files(self) -> List[str]:
         """List all files in the shared folder."""
         try:
-            files = self.client.list()
-            # We filter out directories
+            client = self._get_client()
+            files = await client.list()
             return [item for item in files if not item.endswith('/')]
         except Exception as e:
             sys.stderr.write(f"Error listing files: {e}")
             return ["error, unable to read files"]
         
-    def list_files_metadata(self) -> List[str]:
+    async def list_files_metadata(self) -> List[Dict]:
         """A more detaild list of the files in the folder. Includes things like 
         size, modification date, etag, type, and absolute path."""
         try:
-            files = self.client.list(get_info=True)
+            client = self._get_client()
+            files = await client.list(get_info=True)
             
             filtered_files = [
                 {k: v for k, v in item.items() if k not in ('name', 'created', 'isdir')}
@@ -42,36 +46,50 @@ class NextCloudClient:
             ]
             return filtered_files
         except Exception as e:
-            sys.stderr.write(f"Error listing files: {e}")
-            return ["error, unable to read files"]
+            sys.stderr.write(f"Error listing file metadata: {e}")
+            return ["error, unable to read file metadata"]
 
-    def read_file(self, file_path: str) -> str:
+    def _convert_pdf(self, path: str) -> str:
+        """Isolated structural wrapper for CPU bound document extractions."""
+        return pymupdf4llm.to_markdown(path)
+
+    async def read_file(self, file_path: str) -> str:
         """Read the content of a file from NextCloud."""
+        temp_dir = tempfile.gettempdir()
+        temp_name = os.path.join(temp_dir, f"mcp_{os.path.basename(file_path)}")
+        
         try:
-            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-                self.client.download_file(file_path, temp_file.name)
-                if file_path.endswith('.pdf'):
-                    
-                    # pymupdf4llm is on the heavier side. 
-                    # might need to consider swapping.
-                    content_raw = pymupdf4llm.to_markdown(temp_file.name)
-                    # Remove personal information from document 
-                    # using persidio analyser by microsoft.
-                    content = filter.apply_filter(content_raw=content_raw)
-                else:
-                    with open(temp_file.name, 'r') as f:
-                        content = f.read()
-                os.unlink(temp_file.name)
-                return content
+            client = self._get_client()
+            await client.download_file(file_path, temp_name)
+            if file_path.endswith('.pdf'):
+                # pymupdf4llm is on the heavier side. 
+                # might need to consider swapping.
+                content_raw = await asyncio.to_thread(self._convert_pdf, temp_name)
+            else:
+                with open(temp_name, 'r', encoding='utf-8', errors='ignore') as f:
+                    content_raw = f.read()
+                        
+            # Remove personal information from content.
+            return await self.filter.apply_filter(content_raw=content_raw)
+        
         except Exception as e:
             sys.stderr.write(f"Error reading file {file_path}: {e}")
             return "Error when reading file."
-    
-    def build_context(self) -> Dict[str, str]:
-        """Build context from all files in the folder."""
-        context = {}
-        files = self.list_files()
-        for file_path in files:
-            content = self.read_file(file_path)
-            context[file_path] = content
-        return context
+        finally:
+            if os.path.exists(temp_name):
+                try:
+                    os.unlink(temp_name)
+                except Exception as e:
+                    sys.stderr.write(f"Failed to clear disk resource {temp_name}: {e}\n")
+        
+    async def build_context(self) -> Dict[str, str]:
+        """Build context from all files in the shared folder."""
+        files = await self.list_files()
+        if not files or "error, unable to read files" in files:
+            return {}
+            
+        # Run all file processing routines concurrently using asyncio.gather
+        tasks = [self.read_file(f) for f in files]
+        contents = await asyncio.gather(*tasks)
+        
+        return dict(zip(files, contents))
