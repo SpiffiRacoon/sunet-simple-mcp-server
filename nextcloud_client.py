@@ -17,6 +17,8 @@ class NextCloudClient:
         }
         self.filter = pii_filter
         self._client = None
+        # Adding an asyncio Lock to serialize thread-unsafe PDF processing
+        self._pdf_lock = asyncio.Lock()
         
     def _get_client(self) -> Client:
         if self._client is None:
@@ -62,9 +64,10 @@ class NextCloudClient:
             client = self._get_client()
             await client.download_file(file_path, temp_name)
             if file_path.endswith('.pdf'):
-                # pymupdf4llm is on the heavier side. 
-                # might need to consider swapping.
-                content_raw = await asyncio.to_thread(self._convert_pdf, temp_name)
+                # pymupdf4llm is on the heavier side and isn't thread safe.
+                # TODO: Look into maybe swapping for another alternativ.
+                async with self._pdf_lock:
+                    content_raw = await asyncio.to_thread(self._convert_pdf, temp_name)
             else:
                 with open(temp_name, 'r', encoding='utf-8', errors='ignore') as f:
                     content_raw = f.read()
