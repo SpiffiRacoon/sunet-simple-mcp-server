@@ -1,40 +1,110 @@
-import click
+import sys
+import threading
+import logging
+import os
+import subprocess
+
+# 1. AGGRESSIVE PRESIDIO / RICH LOGGER SUPPRESSION
+# This captures the exact modules throwing the INFO/WARNING columns in your log
+for logger_name in ["presidio-analyzer", "presidio_analyzer", "presidio_analyzer.analyzer_engine", "pymupdf4llm"]:
+    logger = logging.getLogger(logger_name)
+    logger.setLevel(logging.WARNING)  # Silence everything under CRITICAL
+    logger.propagate = False           # Stop logs from trickling up to the root handler
+    # Remove any pre-existing rich handlers attached by presidio
+    while logger.handlers:
+        logger.removeHandler(logger.handlers[0])
+
 from mcp_server import mcp, init_server
+from filter_state import runtime_config
 
-@click.command()
-@click.option(
-    '--entity', '-e', 
-    multiple=True, 
-    default=["PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER"],
-    help="Target Presidio standard tags to actively redact. (e.g. -e PERSON -e IP_ADDRESS)"
-)
-@click.option(
-    '--token', '-t', 
-    type=(str, str), 
-    multiple=True,
-    help="Custom text template strings overrides. Format: [ENTITY_TYPE] [REPLACEMENT_TEXT]"
-)
-@click.option(
-    '--port', '-p', 
-    type=int, 
-    default=8420, 
-    help="Network port to attach HTTP Stream server onto."
-)
-def run_cli(entity, token, port):
-    """Execution CLI wrapper configuration for your PII Filter NextCloud MCP node."""
-    entities_list = list(entity)
-    tokens_dict = dict(token) if token else None
-    
-    click.echo(f"[*] Starting MCP Core Node on port {port}...")
-    click.echo(f"[*] Monitoring Entities: {entities_list}")
-    if tokens_dict:
-        click.echo(f"[*] Custom replacement maps defined: {tokens_dict}")
+server_ready = threading.Event()
 
-    # Inject variables straight into global server states
-    init_server(entities=entities_list, tokens=tokens_dict)
+def print_welcome_banner():
+    """Prints the clean header layout, scaled under 80 characters."""
+    print("\n================================================================")
+    print("[!] INTERACTIVE RUNTIME CLI ACTIVE")
+    print("Commands: status | add/remove <E> | token <E> <V> | clear | exit")
+    print("================================================================\n")
+
+def interactive_cli_loop():
+    # Waiting for mcp server to fully initilize before printing and asking user input.
+    server_ready.wait()
+    print_welcome_banner()
     
-    # Run server instance
+    while True:
+        try:
+            # sys.stdin.readline avoids conflicts with standard async loops
+            sys.stdout.write("mcp-filter> ")
+            sys.stdout.flush()
+            line = sys.stdin.readline().strip()
+            if not line:
+                continue
+                
+            parts = line.split()
+            cmd = parts[0].lower()
+            
+            if cmd == "status":
+                entities, tokens = runtime_config.get_current()
+                print(f"[*] Active Entities : {entities}")
+                print(f"[*] Replacement Tokens: {tokens}")
+                
+            elif cmd == "add" and len(parts) > 1:
+                entity = parts[1].upper()
+                entities, tokens = runtime_config.get_current()
+                if entity not in entities:
+                    entities.append(entity)
+                    runtime_config.update(entities, tokens)
+                    print(f"[+] Added target entity: {entity}")
+                else:
+                    print(f"[-] {entity} already active.")
+                    
+            elif cmd == "remove" and len(parts) > 1:
+                entity = parts[1].upper()
+                entities, tokens = runtime_config.get_current()
+                if entity in entities:
+                    entities.remove(entity)
+                    runtime_config.update(entities, tokens)
+                    print(f"[-] Removed target entity: {entity}")
+                else:
+                    print(f"[-] {entity} is not in the active filter lists.")
+                    
+            elif cmd == "token" and len(parts) > 2:
+                entity = parts[1].upper()
+                token_val = " ".join(parts[2:]) # Allows tokens with spaces
+                entities, tokens = runtime_config.get_current()
+                tokens[entity] = token_val
+                runtime_config.update(entities, tokens)
+                print(f"[+] Token mapping saved: {entity} -> {token_val}")
+            
+            elif cmd == "clear":
+                # Clear terminal screen dynamically based on OS
+                subprocess.run('cls' if os.name == 'nt' else 'clear')
+                print_welcome_banner()
+                
+            elif cmd == "exit":
+                print("[*] Terminating MCP Server...")
+                sys.exit(0)
+            else:
+                print("[-] Command not recognized. Use: status, add, remove, token, exit")
+        except Exception as e:
+            print(f"[-] CLI Error processing inputs: {e}")
+
+def run_node():
+    # 1. Start the runtime CLI parser thread
+    cli_thread = threading.Thread(target=interactive_cli_loop, daemon=True)
+    cli_thread.start()
+    
+    # 2. Init global application components
+    print("[*] Connecting dependencies to NextCloud instances...")
+    init_server()
+    
+    print("[*] Initializing FastMCP HTTP Stream framework on port 8420...")
+    
+    # 3. Release the CLI loop thread right before the server starts blocking
+    server_ready.set()
+    
+    # 4. Block on the server loop
     mcp.run(transport="streamable-http")
 
 if __name__ == '__main__':
-    run_cli()
+    run_node()

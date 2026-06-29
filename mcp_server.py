@@ -8,18 +8,18 @@ from presidio_filter import PII_filter
 load_dotenv()
 
 mcp = FastMCP("Simple NextCloud MCP Server", stateless_http=True,
-              json_response=True, port=8420)
+              json_response=True, port=8420, log_level="CRITICAL")
 
 # Global clients to be populated during runtime setup
 nextcloud_client: NextCloudClient = None
 
-def init_server(entities=None, tokens=None):
+def init_server():
     """Initializes the backend configuration pipeline before server execution."""
     global nextcloud_client
     hostname = os.getenv("HOSTNAME")
     share_token = os.getenv("SHARED_TOKEN")
     
-    pii_filter = PII_filter(entities=entities, tokens=tokens)
+    pii_filter = PII_filter()
     nextcloud_client = NextCloudClient(hostname, share_token, pii_filter)
 
 @mcp.tool()

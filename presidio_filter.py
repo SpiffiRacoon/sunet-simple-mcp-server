@@ -3,20 +3,10 @@ from presidio_analyzer.nlp_engine import NlpEngineProvider
 from presidio_anonymizer import AnonymizerEngine
 from presidio_anonymizer.entities import OperatorConfig
 import asyncio
-
+from filter_state import runtime_config
 
 class PII_filter:
-    def __init__(self, entities=None, tokens=None):
-        # Default entities if none provided
-        self.entities = entities or ["PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER"]
-        
-        # Default tokens mapping
-        self.tokens = tokens or {
-            "PERSON": "[NAMN_REDAKTERAT]",
-            "EMAIL_ADDRESS": "[EPOST_REDAKTERAT]",
-            "PHONE_NUMBER": "[TELEFON_REDAKTERAT]",
-        }
-        
+    def __init__(self):
         self.swedish_nlp_config = {
             "nlp_engine_name": "spacy",
             "models": [
@@ -42,17 +32,20 @@ class PII_filter:
             content_raw = str(content_raw)
         if not content_raw.strip():
             return content_raw
-
+        
+        # check currenly enabled entities and tokens
+        current_entities, current_tokens = runtime_config.get_current()
+        
         analysis_results = self.analyzer.analyze(
             text=content_raw, 
-            entities=self.entities, 
+            entities=current_entities, 
             language='sv'
         )
         
         # Construct dynamic operators based on provided configurations
         operators = {
-            entity: OperatorConfig("replace", {"new_value": self.tokens.get(entity, f"[{entity}_REDAKTERAT]")})
-            for entity in self.entities
+            entity: OperatorConfig("replace", {"new_value": current_tokens.get(entity, f"[{entity}_REDAKTERAT]")})
+            for entity in current_entities
         }
         
         anonymized_result = self.anonymizer.anonymize(

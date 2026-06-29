@@ -3,6 +3,10 @@ from aiodav import Client
 from typing import List, Dict
 import tempfile
 import sys
+import pymupdf
+import logging
+pymupdf.set_messages(pylogging_level=logging.WARNING + 1)
+
 import pymupdf4llm
 from presidio_filter import PII_filter
 import asyncio
@@ -53,7 +57,7 @@ class NextCloudClient:
 
     def _convert_pdf(self, path: str) -> str:
         """Isolated structural wrapper for CPU bound document extractions."""
-        return pymupdf4llm.to_markdown(path)
+        return pymupdf4llm.to_markdown(path, show_progress=False)
 
     async def read_file(self, file_path: str) -> str:
         """Read the content of a file from NextCloud."""
